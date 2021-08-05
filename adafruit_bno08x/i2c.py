@@ -8,7 +8,7 @@
 """
 from struct import pack_into
 import machine
-from adafruit_bno08x import BNO08X, DATA_BUFFER_SIZE, const, Packet, PacketError
+from . import BNO08X, DATA_BUFFER_SIZE, const, Packet, PacketError
 
 _BNO08X_DEFAULT_ADDRESS = const(0x4B)
 

@@ -36,7 +36,7 @@ import time
 from micropython import const
 
 # TODO: Remove on release
-from debug import channels, reports
+from .debug import channels, reports
 
 # TODO: shorten names
 # Channel 0: the SHTP command channel
