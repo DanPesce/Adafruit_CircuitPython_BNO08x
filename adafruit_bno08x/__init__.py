@@ -25,16 +25,18 @@ Implementation Notes
 
 * `Adafruit's Bus Device library <https:# github.com/adafruit/Adafruit_CircuitPython_BusDevice>`_
 """
+import struct
+
 __version__ = "0.0.0-auto.0"
 __repo__ = "https:# github.com/adafruit/Adafruit_CircuitPython_BNO08x.git"
 
-from struct import unpack_from, pack_into
+from struct import unpack_from, pack_into, calcsize
 from collections import namedtuple
 import time
 from micropython import const
 
 # TODO: Remove on release
-from .debug import channels, reports
+from debug import channels, reports
 
 # TODO: shorten names
 # Channel 0: the SHTP command channel
@@ -95,6 +97,10 @@ BNO_REPORT_SHAKE_DETECTOR = const(0x19)
 BNO_REPORT_STABILITY_CLASSIFIER = const(0x13)
 BNO_REPORT_ACTIVITY_CLASSIFIER = const(0x1E)
 BNO_REPORT_GYRO_INTEGRATED_ROTATION_VECTOR = const(0x2A)
+
+BNO_NOMINAL_CALIBRATION_ID = const(0x4D4D)
+BNO_STATIC_CALIBRATION_ID = const(0x7979)
+
 # TODOz:
 # Calibrated Acceleration (m/s2)
 # Euler Angles (in degrees?)
@@ -203,8 +209,10 @@ class PacketError(Exception):
 
 
 def _elapsed(start_time):
-    return time.monotonic() - start_time
+    return time.time() - start_time
 
+def _unpack_from(fmt, b, offset=0):
+    return unpack_from(fmt, b[offset:offset+calcsize(fmt)])
 
 ############ PACKET PARSING ###########################
 def _parse_sensor_report_data(report_bytes):
@@ -218,12 +226,12 @@ def _parse_sensor_report_data(report_bytes):
     else:
         format_str = "<h"
     results = []
-    accuracy = unpack_from("<B", report_bytes, offset=2)[0]
+    accuracy = _unpack_from("<B", report_bytes, offset=2)[0]
     accuracy &= 0b11
 
     for _offset_idx in range(count):
         total_offset = data_offset + (_offset_idx * 2)
-        raw_data = unpack_from(format_str, report_bytes, offset=total_offset)[0]
+        raw_data = _unpack_from(format_str, report_bytes, offset=total_offset)[0]
         scaled_data = raw_data * scalar
         results.append(scaled_data)
     results_tuple = tuple(results)
@@ -232,11 +240,11 @@ def _parse_sensor_report_data(report_bytes):
 
 
 def _parse_step_couter_report(report_bytes):
-    return unpack_from("<H", report_bytes, offset=8)[0]
+    return _unpack_from("<H", report_bytes, offset=8)[0]
 
 
 def _parse_stability_classifier_report(report_bytes):
-    classification_bitfield = unpack_from("<B", report_bytes, offset=4)[0]
+    classification_bitfield = _unpack_from("<B", report_bytes, offset=4)[0]
     return ["Unknown", "On Table", "Stationary", "Stable", "In motion"][
         classification_bitfield
     ]
@@ -250,7 +258,7 @@ def _parse_stability_classifier_report(report_bytes):
 # batch_interval_word
 # sensor_specific_configuration_word
 def _parse_get_feature_response_report(report_bytes):
-    return unpack_from("<BBBHIII", report_bytes)
+    return _unpack_from("<BBBHIII", report_bytes)
 
 
 # 0 Report ID = 0x1E
@@ -273,11 +281,11 @@ def _parse_activity_classifier_report(report_bytes):
         "OnStairs",
     ]
 
-    end_and_page_number = unpack_from("<B", report_bytes, offset=4)[0]
+    end_and_page_number = _unpack_from("<B", report_bytes, offset=4)[0]
     # last_page = (end_and_page_number & 0b10000000) > 0
     page_number = end_and_page_number & 0x7F
-    most_likely = unpack_from("<B", report_bytes, offset=5)[0]
-    confidences = unpack_from("<BBBBBBBBB", report_bytes, offset=6)
+    most_likely = _unpack_from("<B", report_bytes, offset=5)[0]
+    confidences = _unpack_from("<BBBBBBBBB", report_bytes, offset=6)
 
     classification = {}
     classification["most_likely"] = activities[most_likely]
@@ -289,7 +297,7 @@ def _parse_activity_classifier_report(report_bytes):
 
 
 def _parse_shake_report(report_bytes):
-    shake_bitfield = unpack_from("<H", report_bytes, offset=4)[0]
+    shake_bitfield = _unpack_from("<H", report_bytes, offset=4)[0]
     return (shake_bitfield & 0x111) > 0
 
 
@@ -298,11 +306,11 @@ def parse_sensor_id(buffer):
     if not buffer[0] == _SHTP_REPORT_PRODUCT_ID_RESPONSE:
         raise AttributeError("Wrong report id for sensor id: %s" % hex(buffer[0]))
 
-    sw_major = unpack_from("<B", buffer, offset=2)[0]
-    sw_minor = unpack_from("<B", buffer, offset=3)[0]
-    sw_patch = unpack_from("<H", buffer, offset=12)[0]
-    sw_part_number = unpack_from("<I", buffer, offset=4)[0]
-    sw_build_number = unpack_from("<I", buffer, offset=8)[0]
+    sw_major = _unpack_from("<B", buffer, offset=2)[0]
+    sw_minor = _unpack_from("<B", buffer, offset=3)[0]
+    sw_patch = _unpack_from("<H", buffer, offset=12)[0]
+    sw_part_number = _unpack_from("<I", buffer, offset=4)[0]
+    sw_build_number = _unpack_from("<I", buffer, offset=8)[0]
 
     return (sw_part_number, sw_major, sw_minor, sw_patch, sw_build_number)
 
@@ -317,8 +325,8 @@ def _parse_command_response(report_bytes):
     # 4 Response sequence number
     # 5 R0-10 A set of response values. The interpretation of these values is specific
     # to the response for each command.
-    report_body = unpack_from("<BBBBB", report_bytes)
-    response_values = unpack_from("<BBBBBBBBBBB", report_bytes, offset=5)
+    report_body = _unpack_from("<BBBBB", report_bytes)
+    response_values = _unpack_from("<BBBBBBBBBBB", report_bytes, offset=5)
     return (report_body, response_values)
 
 
@@ -458,10 +466,10 @@ class Packet:
     @classmethod
     def header_from_buffer(cls, packet_bytes):
         """Creates a `PacketHeader` object from a given buffer"""
-        packet_byte_count = unpack_from("<H", packet_bytes)[0]
+        packet_byte_count = _unpack_from("<H", packet_bytes)[0]
         packet_byte_count &= ~0x8000
-        channel_number = unpack_from("<B", packet_bytes, offset=2)[0]
-        sequence_number = unpack_from("<B", packet_bytes, offset=3)[0]
+        channel_number = _unpack_from("<B", packet_bytes, offset=2)[0]
+        sequence_number = _unpack_from("<B", packet_bytes, offset=3)[0]
         data_length = max(0, packet_byte_count - 4)
 
         header = PacketHeader(
@@ -505,6 +513,8 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         self._me_calibration_started_at = -1
         self._calibration_complete = False
         self._magnetometer_accuracy = 0
+        self._accelerometer_accuracy = 0
+        self._gyroscope_accuracy = 0
         self._wait_for_initialize = True
         self._init_complete = False
         self._id_read = False
@@ -516,6 +526,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         """Initialize the sensor"""
         for _ in range(3):
             self.hard_reset()
+            time.sleep(1)
             self.soft_reset()
             try:
                 if self._check_id():
@@ -722,6 +733,99 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         )
         self._calibration_complete = False
 
+    def begin_accelerometer_calibration(self):
+        self._send_me_command(
+            [
+                1,  # calibrate accel
+                0,  # calibrate gyro
+                0,  # calibrate mag
+                _ME_CAL_CONFIG,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+
+    def begin_magnetometer_calibration(self):
+        self._send_me_command(
+            [
+                0,  # calibrate accel
+                0,  # calibrate gyro
+                1,  # calibrate mag
+                _ME_CAL_CONFIG,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+
+    def begin_gyroscope_calibration(self):
+        self._send_me_command(
+            [
+                0,  # calibrate accel
+                1,  # calibrate gyro
+                0,  # calibrate mag
+                _ME_CAL_CONFIG,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+
+    def get_accelerometer_calibration_status(self):
+        self._send_me_command(
+            [
+                0,  # calibrate accel
+                0,  # calibrate gyro
+                0,  # calibrate mag
+                _ME_GET_CAL,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+        return self._accelerometer_accuracy
+
+    def get_magnetometer_calibration_status(self):
+        self._send_me_command(
+            [
+                0,  # calibrate accel
+                0,  # calibrate gyro
+                0,  # calibrate mag
+                _ME_GET_CAL,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+        return self._magnetometer_accuracy
+
+    def get_gyroscope_calibration_status(self):
+        self._send_me_command(
+            [
+                0,  # calibrate accel
+                0,  # calibrate gyro
+                0,  # calibrate mag
+                _ME_GET_CAL,
+                0,  # calibrate planar acceleration
+                0,  # 'on_table' calibration
+                0,  # reserved
+                0,  # reserved
+                0,  # reserved
+            ]
+        )
+        return self._gyroscope_accuracy
+
     @property
     def calibration_status(self):
         """Get the status of the self-calibration"""
@@ -740,9 +844,37 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         )
         return self._magnetometer_accuracy
 
+    def _read_frs(self, record_id):
+        self._dbg("\n********** READ FRS **********")
+
+        data = bytearray(2)
+        data[0] = _FRS_READ_REQUEST
+        data[1] = 0  # padding
+        data[2] = 0  # reading whole FRS
+        data[3] = 0  # reading whole FRS
+        _record_id = struct.pack("<H", record_id)[0]
+        data[4] = _record_id[0]
+        data[5] = +record_id[1]
+        data[6] = 0  # reading whole FRS
+        data[7] = 0  # reading whole FRS
+        self._send_packet(BNO_CHANNEL_SHTP_COMMAND, data)
+        self._dbg("\n** Waiting for packet **")
+        # _a_ packet arrived, but which one?
+        while True:
+            self._wait_for_packet_type(
+                BNO_CHANNEL_SHTP_COMMAND, _FRS_READ_RESPONSE
+            )
+            status, word_offset, data, frs_type = self._parse_frs()
+            if status != 0:
+                self._dbg("FRS Status: {}".format(status))
+                self._dbg("Retrying")
+            else:
+                return True
+        return False
+
     def _send_me_command(self, subcommand_params):
 
-        start_time = time.monotonic()
+        start_time = time.time()
         local_buffer = self._command_buffer
         _insert_command_request_report(
             _ME_CALIBRATE,
@@ -760,7 +892,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
     def save_calibration_data(self):
         """Save the self-calibration data"""
         # send a DCD save command
-        start_time = time.monotonic()
+        start_time = time.time()
         local_buffer = bytearray(12)
         _insert_command_request_report(
             _SAVE_DCD,
@@ -801,7 +933,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         else:
             report_id_str = ""
         self._dbg("** Waiting for packet on channel", channel_number, report_id_str)
-        start_time = time.monotonic()
+        start_time = time.time()
         while _elapsed(start_time) < timeout:
             new_packet = self._wait_for_packet()
 
@@ -821,7 +953,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         raise RuntimeError("Timed out waiting for a packet on channel", channel_number)
 
     def _wait_for_packet(self, timeout=_PACKET_READ_TIMEOUT):
-        start_time = time.monotonic()
+        start_time = time.time()
         while _elapsed(start_time) < timeout:
             if not self._data_ready:
                 continue
@@ -886,11 +1018,11 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         command_status, *_rest = response_values
 
         if command == _ME_CALIBRATE and command_status == 0:
-            self._me_calibration_started_at = time.monotonic()
+            self._me_calibration_started_at = time.time()
 
         if command == _SAVE_DCD:
             if command_status == 0:
-                self._dcd_saved_at = time.monotonic()
+                self._dcd_saved_at = time.time()
             else:
                 raise RuntimeError("Unable to save calibration data")
 
@@ -935,6 +1067,10 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         sensor_data, accuracy = _parse_sensor_report_data(report_bytes)
         if report_id == BNO_REPORT_MAGNETOMETER:
             self._magnetometer_accuracy = accuracy
+        if report_id == BNO_REPORT_ACCELEROMETER:
+            self._accelerometer_accuracy = accuracy
+        if report_id == BNO_REPORT_GYROSCOPE:
+            self._gyroscope_accuracy = accuracy
         # TODO: FIXME; Sensor reports are batched in a LIFO which means that multiple reports
         # for the same type will end with the oldest/last being kept and the other
         # newer reports thrown away
@@ -976,7 +1112,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         self._dbg("Enabling", feature_id)
         self._send_packet(_BNO_CHANNEL_CONTROL, set_feature_report)
 
-        start_time = time.monotonic()  # 1
+        start_time = time.time()  # 1
 
         while _elapsed(start_time) < _FEATURE_ENABLE_TIMEOUT:
             self._process_available_packets(max_packets=10)
@@ -1004,8 +1140,23 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
                 self._id_read = True
                 return True
             self._dbg("Packet didn't have sensor ID report, trying again")
-
         return False
+
+    def _parse_frs(self):
+        if not self._data_buffer[4] == _FRS_READ_RESPONSE:
+            return None
+        word_0 = self._get_data(1, "<B")
+        status = word_0 & 0x0F
+        data_len = (word_0 & 0xF0) >> 4
+        word_offset = self._get_data(2, "<H")
+
+        data = []
+        offset = 0
+        for i in range(data_len):
+            offset = (i * 4) + 4
+            data.append(self._get_data(offset, "<I"))
+        frs_type = self._get_data(offset, "<H")
+        return status, word_offset, data, frs_type
 
     def _parse_sensor_id(self):
         if not self._data_buffer[4] == _SHTP_REPORT_PRODUCT_ID_RESPONSE:
@@ -1032,7 +1183,7 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
     def _get_data(self, index, fmt_string):
         # index arg is not including header, so add 4 into data buffer
         data_index = index + 4
-        return unpack_from(fmt_string, self._data_buffer, offset=data_index)[0]
+        return _unpack_from(fmt_string, self._data_buffer, offset=data_index)[0]
 
     # pylint:disable=no-self-use
     @property
@@ -1043,14 +1194,11 @@ class BNO08X:  # pylint: disable=too-many-instance-attributes, too-many-public-m
         """Hardware reset the sensor to an initial unconfigured state"""
         if not self._reset:
             return
-        import digitalio  # pylint:disable=import-outside-toplevel
-
-        self._reset.direction = digitalio.Direction.OUTPUT
-        self._reset.value = True
+        self._reset.value(1)
         time.sleep(0.01)
-        self._reset.value = False
+        self._reset.value(0)
         time.sleep(0.01)
-        self._reset.value = True
+        self._reset.value(1)
         time.sleep(0.01)
 
     def soft_reset(self):
